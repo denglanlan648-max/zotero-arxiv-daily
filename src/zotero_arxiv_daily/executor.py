@@ -11,6 +11,7 @@ from .construct_email import render_email
 from .utils import send_email
 from openai import OpenAI
 from tqdm import tqdm
+import re
 
 
 def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key: str) -> list[str] | None:
@@ -90,35 +91,76 @@ class Executor:
         return corpus
 
     
+    def _deduplicate(self, papers):
+        unique = {}
+        for paper in papers:
+            doi = (getattr(paper, "doi", None) or "").lower().replace("https://doi.org/", "").strip()
+            key = "doi:" + doi if doi else "title:" + re.sub(r"[^a-z0-9]+", "", paper.title.lower())
+            if key not in unique:
+                unique[key] = paper
+            else:
+                old = unique[key]
+                for field in ("doi", "publication", "publication_date", "abstract"):
+                    if not getattr(old, field, None) and getattr(paper, field, None):
+                        setattr(old, field, getattr(paper, field))
+        return list(unique.values())
+
+    def _write_zotero(self, papers):
+        if self.config.executor.get("dry_run", True):
+            logger.info("DRY RUN: Zotero write is disabled; no library items were created.")
+            return
+        zot = zotero.Zotero(self.config.zotero.user_id, 'user', self.config.zotero.api_key)
+        collection_name = self.config.executor.get("zotero_collection", "Economics Daily")
+        matches = [c for c in zot.everything(zot.collections()) if c["data"]["name"] == collection_name]
+        if matches:
+            collection_key = matches[0]["key"]
+        else:
+            created = zot.create_collections([{"name": collection_name}])
+            collection_key = created["successful"]["0"]["key"]
+        items = []
+        for paper in papers:
+            item = zot.item_template("journalArticle")
+            item["title"] = paper.title
+            item["abstractNote"] = paper.abstract or ""
+            item["DOI"] = getattr(paper, "doi", None) or ""
+            item["publicationTitle"] = getattr(paper, "publication", None) or ""
+            item["date"] = getattr(paper, "publication_date", None) or ""
+            item["url"] = paper.url
+            item["creators"] = [{"creatorType": "author", "name": a} for a in (paper.authors or []) if a]
+            item["collections"] = [collection_key]
+            item["tags"] = [{"tag": "economics"}, {"tag": paper.source}]
+            items.append(item)
+        for offset in range(0, len(items), 50):
+            result = zot.create_items(items[offset:offset + 50])
+            if result.get("failed"):
+                logger.warning(f"Some Zotero records failed to import: {len(result['failed'])}")
+        logger.info(f"Zotero import attempted for {len(items)} papers into '{collection_name}'")
+
     def run(self):
         corpus = self.fetch_zotero_corpus()
         corpus = self.filter_corpus(corpus)
         if len(corpus) == 0:
-            logger.error(f"No zotero papers found. Please check your zotero settings:\n{self.config.zotero}")
+            logger.error("No Zotero corpus found; cannot personalize recommendations.")
             return
         all_papers = []
         for source, retriever in self.retrievers.items():
             logger.info(f"Retrieving {source} papers...")
-            papers = retriever.retrieve_papers()
-            if len(papers) == 0:
-                logger.info(f"No {source} papers found")
-                continue
-            logger.info(f"Retrieved {len(papers)} {source} papers")
-            all_papers.extend(papers)
-        logger.info(f"Total {len(all_papers)} papers retrieved from all sources")
-        reranked_papers = []
-        if len(all_papers) > 0:
-            logger.info("Reranking papers...")
-            reranked_papers = self.reranker.rerank(all_papers, corpus)
-            reranked_papers = reranked_papers[:self.config.executor.max_paper_num]
+            try:
+                papers = retriever.retrieve_papers()
+                logger.info(f"Retrieved {len(papers)} {source} papers")
+                all_papers.extend(papers)
+            except Exception as exc:
+                logger.exception(f"Retriever {source} failed: {exc}")
+        all_papers = self._deduplicate(all_papers)
+        logger.info(f"{len(all_papers)} unique papers after DOI/title deduplication")
+        ranked = self.reranker.rerank(all_papers, corpus) if all_papers else []
+        ranked = ranked[:int(self.config.executor.get("top_papers", 5))]
+        if ranked:
             logger.info("Generating TLDR and affiliations...")
-            for p in tqdm(reranked_papers):
-                p.generate_tldr(self.openai_client, self.config.llm)
-                p.generate_affiliations(self.openai_client, self.config.llm)
-        elif not self.config.executor.send_empty:
-            logger.info("No new papers found. No email will be sent.")
-            return
-        logger.info("Sending email...")
-        email_content = render_email(reranked_papers)
-        send_email(self.config, email_content)
-        logger.info("Email sent successfully")
+            for paper in tqdm(ranked):
+                paper.generate_tldr(self.openai_client, self.config.llm)
+                paper.generate_affiliations(self.openai_client, self.config.llm)
+        logger.info(f"Selected {len(ranked)} papers")
+        for i, paper in enumerate(ranked, 1):
+            logger.info(f"{i}. {paper.title} | DOI={getattr(paper, 'doi', None)} | score={paper.score}")
+        self._write_zotero(ranked)
