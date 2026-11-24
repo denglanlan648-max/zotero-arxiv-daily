@@ -1,6 +1,12 @@
 name: Economics literature (validation)
 on:
   workflow_dispatch:
+  push:
+    branches: [backuo]
+    paths:
+      - economics_daily.py
+      - economics_tests/**
+      - .github/workflows/economics.yml
 permissions:
   contents: read
 concurrency:
