@@ -28,6 +28,6 @@ jobs:
           ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: https://generativelanguage.googleapis.com/v1beta/openai/
-          OPENAI_MODEL: gemini-2.5-flash
+          OPENAI_MODEL: gemini-4-hydrogen
           OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
         run: python economics_daily.py
