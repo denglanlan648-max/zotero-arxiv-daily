@@ -24,7 +24,7 @@ def request(url, *, method="GET", data=None, headers=None):
             with urllib.request.urlopen(req, timeout=45) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
-            if exc.code != 429 or attempt == 2: raise
+            if exc.code not in (429, 502, 503, 504) or attempt == 2: raise
             delay = exc.headers.get("Retry-After", "5")
             time.sleep(min(int(delay) if delay.isdigit() else 5, 30))
 
