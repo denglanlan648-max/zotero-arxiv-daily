@@ -5,6 +5,8 @@ import json
 import os
 import re
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -17,8 +19,14 @@ HEADERS = {"User-Agent": "economics-literature-daily/1.0", "Accept": "applicatio
 def request(url, *, method="GET", data=None, headers=None):
     req = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None,
                                  headers={**HEADERS, **(headers or {}), **({"Content-Type": "application/json"} if data is not None else {})}, method=method)
-    with urllib.request.urlopen(req, timeout=45) as response:
-        return json.loads(response.read())
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=45) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or attempt == 2: raise
+            delay = exc.headers.get("Retry-After", "5")
+            time.sleep(min(int(delay) if delay.isdigit() else 5, 30))
 
 
 def title_key(s):
@@ -51,6 +59,7 @@ def discover(days=7):
                         location = w.get("primary_location") or {}
                         papers.append(dict(title=w.get("title") or "", doi=doi_key(w.get("doi")), abstract=abstract(w.get("abstract_inverted_index")), authors=[a.get("author", {}).get("display_name", "") for a in w.get("authorships", [])], date=w.get("publication_date") or "", journal=(location.get("source") or {}).get("display_name", ""), url=w.get("doi") or w.get("id") or "", source=source))
                 else:
+                    time.sleep(1)
                     params = urllib.parse.urlencode({"query.bibliographic": topic, "filter": "from-pub-date:" + since, "rows": 50})
                     works = request("https://api.crossref.org/works?" + params)["message"]["items"]
                     for w in works:
@@ -86,6 +95,8 @@ def deduplicate(papers, existing=()):
         d, t = doi_key(p.get("doi")), title_key(p.get("title"))
         if not t: continue
         if t in titles or (d and d in dois):
+            titles.add(t)
+            if d: dois.add(d)
             # Combine complementary metadata when two discovery sources report the same paper.
             for old in result:
                 if title_key(old.get("title")) == t or (d and doi_key(old.get("doi")) == d):
