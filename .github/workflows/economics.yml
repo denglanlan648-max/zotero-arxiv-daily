@@ -1,0 +1,26 @@
+name: Economics literature (validation)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: economics-daily
+  cancel-in-progress: false
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Unit tests
+        run: python -m unittest discover -s economics_tests
+      - name: Dry run (no Zotero writes)
+        env:
+          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+        run: python economics_daily.py
